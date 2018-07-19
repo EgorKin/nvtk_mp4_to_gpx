@@ -10,6 +10,7 @@
 # Modded by EgorKin (egorkin at gmail.com)
 # Add include (-i) files by mask or directory to parse multiple files without combine MP4 video files in video editor software
 # Add show help by run script w/o arguments
+# Add course tag support
 
 import os, struct, sys, argparse, glob
 
@@ -114,10 +115,10 @@ def get_gps_atom(gps_atom_info,f):
         print("Error! skipping atom at %x (expected size:%d, actual size:%d, expected type:%s, actual type:%s, expected magic:%s, actual maigc:%s)!" % (int(atom_pos),atom_size,atom_size1,expected_type,atom_type,expected_magic,magic))
         return
 
-    hour,minute,second,year,month,day,active,latitude_b,longitude_b,unknown2,latitude,longitude,speed = struct.unpack_from('<IIIIIIssssfff',data, 48)
-    active=active.decode()
-    latitude_b=latitude_b.decode()
-    longitude_b=longitude_b.decode()
+    hour,minute,second,year,month,day,active,latitude_b,longitude_b,unknown2,latitude,longitude,speed,course = struct.unpack_from('<IIIIIIssssffff',data, 48)
+    active=active.decode() # A=data valid or V=data not valid
+    latitude_b=latitude_b.decode() # N=north or S=south
+    longitude_b=longitude_b.decode() # E=east or W=west
 
     time=fix_time(hour,minute,second,year,month,day)
     latitude=fix_coordinates(latitude_b,latitude)
@@ -129,7 +130,7 @@ def get_gps_atom(gps_atom_info,f):
         print("Skipping: lost GPS satelite reception. Time: %s." % time)
         return
 
-    return (latitude,longitude,time,speed)
+    return (latitude,longitude,time,speed,course)
 
 def get_gpx(gps_data,out_file):
     gpx  = '<?xml version="1.0" encoding="UTF-8"?>\n'
@@ -143,7 +144,7 @@ def get_gpx(gps_data,out_file):
     gpx += "\t<trk><name>%s</name><trkseg>\n" % out_file
     for l in gps_data:
         if l:
-            gpx += "\t\t<trkpt lat=\"%f\" lon=\"%f\"><time>%s</time><speed>%f</speed></trkpt>\n" % l
+            gpx += "\t\t<trkpt lat=\"%f\" lon=\"%f\"><time>%s</time><speed>%f</speed><course>%f</course></trkpt>\n" % l
     gpx += '\t</trkseg></trk>\n'
     gpx += '</gpx>\n'
     return gpx
