@@ -38,12 +38,12 @@ def check_in_file(in_file):
                     for f2 in os.listdir(f1):
                         f3 = os.path.join(f1,f2)
                         if os.path.isfile(f3):
-                            print(f3.rsplit(".",1))
+                            #print(f3.rsplit(".",1))
                             if f3.rsplit(".",1)[1].upper()=="MP4" or f3.rsplit(".",1)[1].upper()=="MOV":
                                 print("Queueing file '%s' for processing..." % f3)
                                 in_files.append(f3)
                 elif os.path.isfile(f1):
-                    print(f1.rsplit(".",1))
+                    #print(f1.rsplit(".",1))
                     if f1.rsplit(".",1)[1].upper()=="MP4" or f1.rsplit(".",1)[1].upper()=="MOV":
                         print("Queueing file '%s' for processing..." % f1)
                         in_files.append(f1)
@@ -55,7 +55,7 @@ def check_in_file(in_file):
     return in_files
 
 def get_args():
-    p = argparse.ArgumentParser(add_help=True, description='This script will attempt to extract GPS data from Novatek MP4 file and output it in GPX format.')
+    p = argparse.ArgumentParser(add_help=True, description='This script will attempt to extract GPS data from dashcam video files and output it in GPX format.')
     p.add_argument('-i',metavar='input',nargs='+',help='input file(s), globs (eg: *) or directory(ies)')
     p.add_argument('-o',metavar='output',nargs=1,help='output file (single)')
     p.add_argument('-f',action='store_true',help='overwrite output file if exists')
@@ -98,7 +98,11 @@ def get_atom_info(eight_bytes):
         atom_size,atom_type=struct.unpack('>I4s',eight_bytes)
     except struct.error:
         return 0,''
-    return int(atom_size),atom_type.decode()
+    try:
+        a_t = atom_type.decode()
+    except UnicodeDecodeError:
+        a_t = 'UNKNOWN'
+    return int(atom_size),a_t
 
 def get_gps_atom_info(eight_bytes):
     atom_pos,atom_size=struct.unpack('>II',eight_bytes)
@@ -111,17 +115,26 @@ def get_gps_atom(gps_atom_info,f):
     expected_type='free'
     expected_magic='GPS '
     atom_size1,atom_type,magic=struct.unpack_from('>I4s4s',data)
-    atom_type=atom_type.decode()
-    magic=magic.decode()
-    #sanity:
-    if atom_size != atom_size1 or atom_type != expected_type or magic != expected_magic:
-        print("Error! skipping atom at %x (expected size:%d, actual size:%d, expected type:%s, actual type:%s, expected magic:%s, actual maigc:%s)!" % (int(atom_pos),atom_size,atom_size1,expected_type,atom_type,expected_magic,magic))
+    try:
+        atom_type=atom_type.decode()
+        magic=magic.decode()
+        #sanity:
+        if atom_size != atom_size1 or atom_type != expected_type or magic != expected_magic:
+            print("Error! skipping atom at %x (expected size:%d, actual size:%d, expected type:%s, actual type:%s, expected magic:%s, actual maigc:%s)!" % (int(atom_pos),atom_size,atom_size1,expected_type,atom_type,expected_magic,magic))
+            return
+    except UnicodeDecodeError as e:
+        print("Skipping: garbage atom type or magic. Error: %s." % str(e))
         return
 
     hour,minute,second,year,month,day,active,latitude_b,longitude_b,unknown2,latitude,longitude,speed,course = struct.unpack_from('<IIIIIIssssffff',data, 48)
-    active=active.decode() # A=data valid or V=data not valid
-    latitude_b=latitude_b.decode() # N=north or S=south
-    longitude_b=longitude_b.decode() # E=east or W=west
+    try:
+        active=active.decode() # A=data valid or V=data not valid
+        latitude_b=latitude_b.decode() # N=north or S=south
+        longitude_b=longitude_b.decode() # E=east or W=west
+
+    except UnicodeDecodeError as e:
+        print("Skipping: garbage data. Error: %s." % str(e))
+        return
 
     time=fix_time(hour,minute,second,year,month,day)
     latitude=fix_coordinates(latitude_b,latitude)
@@ -188,6 +201,9 @@ def process_file(in_file):
                         f.seek(gps_offset,0)
                         while gps_offset < ( sub_offset + sub_atom_size):
                             gps_data.append(get_gps_atom(get_gps_atom_info(f.read(8)),f))
+                            #do not add (remove) empty data when GPS data is not valid
+                            if gps_data[len(gps_data)-1] is None:
+                                del gps_data[len(gps_data)-1]
                             gps_offset += 8
                             f.seek(gps_offset,0)
 #                    else:
@@ -243,6 +259,9 @@ def process_file_wo_gps_chunk(in_file):
             f.seek(i)
             r = hlp(i,f.read(8)) #hack, need only 4 bytes
             gps_data.append(get_gps_atom(r,f))
+            #do not add (remove) empty data when GPS data is not valid
+            if gps_data[len(gps_data)-1] is None:
+                del gps_data[len(gps_data)-1]
     f.close()
 
 def main():
@@ -254,10 +273,10 @@ def main():
             process_file_wo_gps_chunk(f) #try find GPS data directly
 
     gpx=get_gpx(gps_data,out_file)
-
+    print("Found %d GPS valid data points." % len(gps_data))
     if gpx:
         with open (out_file, "w") as f:
-            print("Wiriting data to output file '%s'" % out_file)
+            print("Wiriting data to output file '%s'." % out_file)
             f.write(gpx)
             f.close()
     else:
