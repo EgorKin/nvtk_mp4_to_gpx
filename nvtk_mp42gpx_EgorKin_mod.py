@@ -10,10 +10,13 @@
 # Modded by EgorKin (egorkin at gmail.com)
 # Add include (-i) files by mask or directory to parse multiple files without combine MP4 video files in video editor software
 # Add show help by run script w/o arguments
-# Add course tag support
+# 19.07.2018 - Add course tag support
+# 25.09.2018 - Add new searching GPS data algo, useful for some files w/o gps chunks in 'moov' section. IMHO can find GPS data in ANY file if data is present.
+#            - Add MOV to file extension list
 
 import os, struct, sys, argparse, glob
 
+gps_chunk_offsets = []
 gps_data = []
 gpx = ''
 in_file = ''
@@ -36,12 +39,12 @@ def check_in_file(in_file):
                         f3 = os.path.join(f1,f2)
                         if os.path.isfile(f3):
                             print(f3.rsplit(".",1))
-                            if f3.rsplit(".",1)[1].upper()=="MP4":
+                            if f3.rsplit(".",1)[1].upper()=="MP4" or f3.rsplit(".",1)[1].upper()=="MOV":
                                 print("Queueing file '%s' for processing..." % f3)
                                 in_files.append(f3)
                 elif os.path.isfile(f1):
                     print(f1.rsplit(".",1))
-                    if f1.rsplit(".",1)[1].upper()=="MP4":				
+                    if f1.rsplit(".",1)[1].upper()=="MP4" or f1.rsplit(".",1)[1].upper()=="MOV":
                         print("Queueing file '%s' for processing..." % f1)
                         in_files.append(f1)
                 else:
@@ -149,7 +152,17 @@ def get_gpx(gps_data,out_file):
     gpx += '</gpx>\n'
     return gpx
 
-
+	
+#prev_offset = 0
+#read 4 bytes size + 4 bytes string
+#check if string == 'moov'
+#while not seek to offset = prev_offset + 4 bytes size
+#if 'moov' found
+#prev_offset = next_after_moov
+#read 4 bytes size + 4 bytes string
+#check if string == 'gps '
+#while not seek to offset = prev_offset + 4 bytes size
+#if 'gps ' found looking offsets on gps data
 def process_file(in_file):
     global gps_data
     print("Processing file '%s'..." % in_file)
@@ -169,7 +182,7 @@ def process_file(in_file):
                     sub_atom_pos = f.tell()
                     sub_atom_size, sub_atom_type = get_atom_info(f.read(8))
 
-                    if str(sub_atom_type) == 'gps ':
+                    if sub_atom_type == 'gps ':
                         print("Found gps chunk descriptor atom...")
                         gps_offset = 16 + sub_offset # +16 = skip headers
                         f.seek(gps_offset,0)
@@ -177,16 +190,68 @@ def process_file(in_file):
                             gps_data.append(get_gps_atom(get_gps_atom_info(f.read(8)),f))
                             gps_offset += 8
                             f.seek(gps_offset,0)
-
+#                    else:
+#                        print("gps chunk not found but %s" % sub_atom_type)
                     sub_offset += sub_atom_size
                     f.seek(sub_offset,0)
 
             offset += atom_size
             f.seek(offset,0)
+    f.close()
+
+
+def fnd(fname, s, start=0):
+    with open(fname, 'rb') as f:
+        fsize = os.path.getsize(fname)
+        bsize = 4096
+        buffer = None
+        if start > 0:
+            f.seek(start)
+        overlap = len(s) - 1
+        while True:
+            if (f.tell() >= overlap and f.tell() < fsize):
+                f.seek(f.tell() - overlap)
+            buffer = f.read(bsize)
+            if buffer:
+                pos = buffer.find(s)
+                if pos >= 0:
+                    return f.tell() - (len(buffer) - pos)
+            else:
+                return -1
+
+
+def searching_freeGPS_text(in_file):
+    i = fnd(in_file, 'freeGPS ', 0)
+    while i != -1:
+        print("Found freeGPS at %x" % i)
+        gps_chunk_offsets.append(i - 4) # 4 bytes before 'freeGPS ' = gps chunk size
+        i = fnd(in_file, 'freeGPS ', i+9)
+
+def hlp(i, bytes):
+    atom_size,nop=struct.unpack_from('>II',bytes) # read 8 cause result '>I' is tuple => error
+    return i,int(atom_size)
+
+#universal way to find GPS data - looking for 'freeGPS ' as tag for gps chunks
+#longer but should find GPS data at any files
+def process_file_wo_gps_chunk(in_file):
+    global gps_data
+    print("Processing file '%s'..." % in_file)
+    searching_freeGPS_text(in_file)
+
+    with open(in_file, 'rb') as f:
+        for i in gps_chunk_offsets:
+            f.seek(i)
+            r = hlp(i,f.read(8)) #hack, need only 4 bytes
+            gps_data.append(get_gps_atom(r,f))
+    f.close()
+
 def main():
     in_files,out_file=get_args()
     for f in in_files:
         process_file(f)
+        if(len(gps_data) == 0):
+            print("Can`t find GPS chunks at file %s, try direct searching..." % f)
+            process_file_wo_gps_chunk(f) #try find GPS data directly
 
     gpx=get_gpx(gps_data,out_file)
 
@@ -194,6 +259,7 @@ def main():
         with open (out_file, "w") as f:
             print("Wiriting data to output file '%s'" % out_file)
             f.write(gpx)
+            f.close()
     else:
         print("GPS data not found...")
         sys.exit(1)
