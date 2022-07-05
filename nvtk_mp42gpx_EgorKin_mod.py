@@ -13,6 +13,9 @@
 # 19.07.2018 - Add course tag support
 # 25.09.2018 - Add new searching GPS data algo, useful for some files w/o gps chunks in 'moov' section. IMHO can find GPS data in ANY file if data is present.
 #            - Add MOV to file extension list
+# 21.05.2021: add unknown_new = 0x03F0 and change offset from 48 to 12 for new VIOFO A129 Plus (Duo)
+# 05.07.2022: add unknown_new = 0x58 and change offset to 0x30 for new VIOFO A229
+
 
 import os, struct, sys, argparse, glob
 
@@ -22,6 +25,15 @@ gpx = ''
 in_file = ''
 out_file = ''
 force = False
+
+CounterFreeGPS = 0
+CounterGPSChunk = 0
+
+CounterValidGPSChunk = 0
+CounterValidFreeGPS = 0
+# for chunks and for freeGPS too
+CounterSkipLostGPSChunk = 0
+CounterSkipLostFreeGPS = 0
 
 def check_out_file(out_file,force):
     if os.path.isfile(out_file) and not force:
@@ -110,8 +122,13 @@ def get_gps_atom_info(eight_bytes):
 
 def get_gps_atom(gps_atom_info,f):
     atom_pos,atom_size=gps_atom_info
-    f.seek(atom_pos)
-    data=f.read(atom_size)
+    print("Atom pos = %x, atom size = %x" % (atom_pos,atom_size));
+    try:
+        f.seek(atom_pos)
+        data=f.read(atom_size)
+    except OverflowError as e:
+        print("Skipping at %x: seek or read error. Error: %s." % (int(atom_pos), str(e)))
+        return
     expected_type='free'
     expected_magic='GPS '
     atom_size1,atom_type,magic=struct.unpack_from('>I4s4s',data)
@@ -123,12 +140,24 @@ def get_gps_atom(gps_atom_info,f):
             print("Error! skipping atom at %x (expected size:%d, actual size:%d, expected type:%s, actual type:%s, expected magic:%s, actual maigc:%s)!" % (int(atom_pos),atom_size,atom_size1,expected_type,atom_type,expected_magic,magic))
             return
     except UnicodeDecodeError as e:
-        print("Skipping: garbage atom type or magic. Error: %s." % str(e))
+        print("Skipping at %x: garbage atom type or magic. Error: %s." % (int(atom_pos), str(e)))
         return
 
-    hour,minute,second,year,month,day,active,latitude_b,longitude_b,unknown2,latitude,longitude,speed,course = struct.unpack_from('<IIIIIIssssffff',data, 48)
+    # > - big-endian    < - little-endian
+    #21.05.2021: add unknown_new = 0x03F0
+    #05.07.2022: add unknown_new = 0x58
+    #was: hour,minute,second,year,month,day,active,latitude_b,longitude_b,unknown2,latitude,longitude,speed,course = struct.unpack_from('<IIIIIIIssssffff',data, 48)
+    unknown_new = struct.unpack_from('<I',data, 12)
+    #print("unknown_new = %x" % unknown_new[0])
+    if unknown_new[0] == 0x58:
+        hour,minute,second,year,month,day,active,latitude_b,longitude_b, unknown2,latitude,longitude,speed,course = struct.unpack_from('<IIIIIIssssffff',data, 0x30)
+    else:
+        if unknown_new[0] == 0x3F0:
+            hour,minute,second,year,month,day,active,latitude_b,longitude_b, unknown2,latitude,longitude,speed,course = struct.unpack_from('<IIIIIIssssffff',data, 0x10)
+        else:
+            hour,minute,second,year,month,day,active,latitude_b,longitude_b,unknown2,latitude,longitude,speed,course = struct.unpack_from('<IIIIIIssssffff',data, 48)
     try:
-        active=active.decode() # A=data valid or V=data not valid
+        active=active.decode() # A=data active and valid or V=data not valid
         latitude_b=latitude_b.decode() # N=north or S=south
         longitude_b=longitude_b.decode() # E=east or W=west
 
@@ -143,10 +172,11 @@ def get_gps_atom(gps_atom_info,f):
 
     #it seems that A indicate reception
     if active != 'A':
-        print("Skipping: lost GPS satelite reception. Time: %s." % time)
+        print("Skipping: (%s) lost GPS satelite reception. Time: %s." % (active, time))
         return
 
     return (latitude,longitude,time,speed,course)
+
 
 def get_gpx(gps_data,out_file):
     gpx  = '<?xml version="1.0" encoding="UTF-8"?>\n'
@@ -178,6 +208,9 @@ def get_gpx(gps_data,out_file):
 #if 'gps ' found looking offsets on gps data
 def process_file(in_file):
     global gps_data
+    global CounterGPSChunk
+    global CounterSkipLostGPSChunk
+    global CounterValidGPSChunk
     print("Processing file '%s'..." % in_file)
     with open(in_file, "rb") as f:
         offset = 0
@@ -200,10 +233,15 @@ def process_file(in_file):
                         gps_offset = 16 + sub_offset # +16 = skip headers
                         f.seek(gps_offset,0)
                         while gps_offset < ( sub_offset + sub_atom_size):
+                            CounterGPSChunk += 1
                             gps_data.append(get_gps_atom(get_gps_atom_info(f.read(8)),f))
                             #do not add (remove) empty data when GPS data is not valid
                             if gps_data[len(gps_data)-1] is None:
+                                CounterSkipLostGPSChunk += 1
                                 del gps_data[len(gps_data)-1]
+                            else:
+                                CounterValidGPSChunk += 1
+                                
                             gps_offset += 8
                             f.seek(gps_offset,0)
 #                    else:
@@ -237,20 +275,24 @@ def fnd(fname, s, start=0):
 
 
 def searching_freeGPS_text(in_file):
+    global CounterFreeGPS
     i = fnd(in_file, 'freeGPS ', 0)
     while i != -1:
         print("Found freeGPS at %x" % i)
+        CounterFreeGPS += 1
         gps_chunk_offsets.append(i - 4) # 4 bytes before 'freeGPS ' = gps chunk size
         i = fnd(in_file, 'freeGPS ', i+9)
 
 def hlp(i, bytes):
     atom_size,nop=struct.unpack_from('>II',bytes) # read 8 cause result '>I' is tuple => error
-    return i,int(atom_size)
+    return int(i),int(atom_size)
 
 #universal way to find GPS data - looking for 'freeGPS ' as tag for gps chunks
 #longer but should find GPS data at any files
 def process_file_wo_gps_chunk(in_file):
     global gps_data
+    global CounterSkipLostFreeGPS
+    global CounterValidFreeGPS
     print("Processing file '%s'..." % in_file)
     searching_freeGPS_text(in_file)
 
@@ -261,26 +303,40 @@ def process_file_wo_gps_chunk(in_file):
             gps_data.append(get_gps_atom(r,f))
             #do not add (remove) empty data when GPS data is not valid
             if gps_data[len(gps_data)-1] is None:
+                CounterSkipLostFreeGPS += 1
                 del gps_data[len(gps_data)-1]
+            else:
+                CounterValidFreeGPS += 1
+                
     f.close()
 
 def main():
     in_files,out_file=get_args()
+    global gps_chunk_offsets
+    global gps_data
+    
     for f in in_files:
+        #clear arrays from prev file
+        #del gps_chunk_offsets[:]
+        #del gps_data[:]
+        
         process_file(f)
         if(len(gps_data) == 0):
-            print("Can`t find GPS chunks at file %s, try direct searching..." % f)
+            print("Found - Total GPS chunks:%d Valid:%d Skip:%d" % (CounterGPSChunk, CounterValidGPSChunk, CounterSkipLostGPSChunk))
+            print("Can`t find GPS chunks at file %s, try direct searching.\r\n" % f)
             process_file_wo_gps_chunk(f) #try find GPS data directly
 
     gpx=get_gpx(gps_data,out_file)
+    print("Found - Total GPS chunks:%d Valid:%d Skip:%d" % (CounterGPSChunk, CounterValidGPSChunk, CounterSkipLostGPSChunk))
+    print("Found - Total freeGPS   :%d Valid:%d Skip:%d" % (CounterFreeGPS, CounterValidFreeGPS, CounterSkipLostFreeGPS))
     print("Found %d GPS valid data points." % len(gps_data))
-    if gpx:
+    if gpx and len(gps_data) > 0 :
         with open (out_file, "w") as f:
             print("Wiriting data to output file '%s'." % out_file)
             f.write(gpx)
             f.close()
     else:
-        print("GPS data not found...")
+        print("GPS data not found.")
         sys.exit(1)
 
     print("Success!")
