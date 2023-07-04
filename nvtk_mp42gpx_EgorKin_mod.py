@@ -14,7 +14,8 @@
 # 25.09.2018 - Add new searching GPS data algo, useful for some files w/o gps chunks in 'moov' section. IMHO can find GPS data in ANY file if data is present.
 #            - Add MOV to file extension list
 # 21.05.2021: add unknown_new = 0x03F0 and change offset from 48 to 12 for new VIOFO A129 Plus (Duo)
-# 05.07.2022: add unknown_new = 0x58 and change offset to 0x30 for new VIOFO A229
+# 05.07.2022: add unknown_new = 0x58, offset = 0x30 for new VIOFO A229
+# 04.07.2023: add unknown_new = 0x2C, offset = 0x10 for new FW for VIOFO A229
 
 
 import os, struct, sys, argparse, glob
@@ -152,10 +153,10 @@ def get_gps_atom(gps_atom_info,f):
     if unknown_new[0] == 0x58:
         hour,minute,second,year,month,day,active,latitude_b,longitude_b, unknown2,latitude,longitude,speed,course = struct.unpack_from('<IIIIIIssssffff',data, 0x30)
     else:
-        if unknown_new[0] == 0x3F0:
+        if (unknown_new[0] == 0x3F0 or unknown_new[0] == 0x2C):
             hour,minute,second,year,month,day,active,latitude_b,longitude_b, unknown2,latitude,longitude,speed,course = struct.unpack_from('<IIIIIIssssffff',data, 0x10)
         else:
-            hour,minute,second,year,month,day,active,latitude_b,longitude_b,unknown2,latitude,longitude,speed,course = struct.unpack_from('<IIIIIIssssffff',data, 48)
+            hour,minute,second,year,month,day,active,latitude_b,longitude_b,unknown2,latitude,longitude,speed,course = struct.unpack_from('<IIIIIIssssffff',data, 0x30)
     try:
         active=active.decode() # A=data active and valid or V=data not valid
         latitude_b=latitude_b.decode() # N=north or S=south
