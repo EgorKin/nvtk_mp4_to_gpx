@@ -7,6 +7,7 @@ This script is based on original script file from Sergei at https://sergei.nz/ex
 
 ## Usage:
 **In cmd line:**
+
 ```python nvtk_mp42gpx_EgorKin_mod.py -i input_video_file.mp4 -o outputGPSinfo.gpx```
 
 **To extract GPS info from all video files in current directory:**
